@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export default function StatsBar() {
   const [stats, setStats] = useState(null)
@@ -34,7 +34,7 @@ export default function StatsBar() {
     >
       <div className="brand">
         <div className="brand-icon">🧠</div>
-        <span className="brand-text">RAG Intelligence</span>
+        <span className="brand-text">OmniSearch RAG</span>
       </div>
 
       <div className="stats-group">

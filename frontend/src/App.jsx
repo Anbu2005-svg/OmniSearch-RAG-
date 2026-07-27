@@ -4,7 +4,8 @@ import StatsBar from './components/StatsBar'
 import SearchPanel from './components/SearchPanel'
 import ResultsPanel from './components/ResultsPanel'
 
-const API_BASE = 'http://localhost:8000'
+// Read backend URL from Vite environment variable (VITE_API_BASE_URL) or default to localhost:8000
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export default function App() {
   const [isSearching, setIsSearching] = useState(false)
@@ -42,7 +43,7 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* 3D Background */}
+      {/* Background Glow */}
       <Scene3D searching={isSearching} />
 
       {/* UI Overlay */}
