@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import urllib.request
 import numpy as np
 import faiss
 import torch
@@ -10,11 +11,14 @@ from sentence_transformers import SentenceTransformer
 torch.set_num_threads(2)
 faiss.omp_set_num_threads(2)
 
+DEFAULT_INDEX_URL = os.getenv("INDEX_DOWNLOAD_URL", "")
+DEFAULT_META_URL = os.getenv("METADATA_DOWNLOAD_URL", "")
+
 class FAISSMetadataRetriever:
     """
-    Ultra-Lightweight RAG Retriever (<150 MB RAM):
-    - Uses ultra-compact 'all-MiniLM-L6-v2' model (~80 MB RAM vs 440 MB for mpnet).
-    - Lazy model loading so server binds port $PORT instantly within Render 512MB limit.
+    Ultra-Lightweight RAG Retriever:
+    - Auto-downloads vector index from cloud storage if missing on server.
+    - Uses ultra-compact 'all-MiniLM-L6-v2' model (~80 MB RAM).
     - O(1) byte-offset disk seeking for instant document metadata lookups (<1ms).
     """
     def __init__(
@@ -35,8 +39,27 @@ class FAISSMetadataRetriever:
         self.line_offsets = []
         self._meta_file = None
 
+        self._ensure_files_exist()
         self._load_index()
         self._load_metadata_offsets()
+
+    def _ensure_files_exist(self):
+        """Download index and metadata files if hosted on cloud storage URL."""
+        if not os.path.exists(self.index_path) and DEFAULT_INDEX_URL:
+            print(f"[Download] Downloading FAISS index from {DEFAULT_INDEX_URL}...")
+            try:
+                urllib.request.urlretrieve(DEFAULT_INDEX_URL, self.index_path)
+                print("[Download] FAISS index download complete!")
+            except Exception as e:
+                print(f"[Download Error] FAISS index download failed: {e}")
+
+        if not os.path.exists(self.metadata_path) and DEFAULT_META_URL:
+            print(f"[Download] Downloading Metadata file from {DEFAULT_META_URL}...")
+            try:
+                urllib.request.urlretrieve(DEFAULT_META_URL, self.metadata_path)
+                print("[Download] Metadata file download complete!")
+            except Exception as e:
+                print(f"[Download Error] Metadata download failed: {e}")
 
     def _load_index(self):
         if not os.path.exists(self.index_path):
