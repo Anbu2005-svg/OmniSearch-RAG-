@@ -8,33 +8,39 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 # Optimize CPU thread allocation
-torch.set_num_threads(2)
-faiss.omp_set_num_threads(2)
+torch.set_num_threads(4)
+faiss.omp_set_num_threads(4)
 
-DEFAULT_INDEX_URL = os.getenv("INDEX_DOWNLOAD_URL", "")
-DEFAULT_META_URL = os.getenv("METADATA_DOWNLOAD_URL", "")
+# Public Hugging Face Dataset direct download URLs
+DEFAULT_INDEX_URL = os.getenv(
+    "INDEX_DOWNLOAD_URL",
+    "https://huggingface.co/datasets/Anbanand/OmniSearch_RAG/resolve/main/faiss_index.index"
+)
+DEFAULT_META_URL = os.getenv(
+    "METADATA_DOWNLOAD_URL",
+    "https://huggingface.co/datasets/Anbanand/OmniSearch_RAG/resolve/main/faiss_metadata.jsonl"
+)
 
 class FAISSMetadataRetriever:
     """
-    Ultra-Lightweight RAG Retriever:
-    - Auto-downloads vector index from cloud storage if missing on server.
-    - Uses ultra-compact 'all-MiniLM-L6-v2' model (~80 MB RAM).
+    RAG Retriever for 768-dim FAISS index and JSONL metadata file (200k documents).
+    - Auto-downloads vector index from Hugging Face dataset (Anbanand/OmniSearch_RAG) if missing on server.
     - O(1) byte-offset disk seeking for instant document metadata lookups (<1ms).
     """
     def __init__(
         self,
         index_path: str = "faiss_index.index",
         metadata_path: str = "faiss_metadata.jsonl",
-        model_name: str = "all-MiniLM-L6-v2"
+        model_name: str = "all-mpnet-base-v2"
     ):
         self.index_path = index_path
         self.metadata_path = metadata_path
-        self.model_name = os.getenv("EMBEDDING_MODEL", model_name)
+        self.model_name = model_name
 
         self.index = None
         self.encoder = None
         self.total_vectors = 0
-        self.vector_dim = 384 if "MiniLM" in self.model_name else 768
+        self.vector_dim = 768
         
         self.line_offsets = []
         self._meta_file = None
@@ -42,22 +48,23 @@ class FAISSMetadataRetriever:
         self._ensure_files_exist()
         self._load_index()
         self._load_metadata_offsets()
+        self._load_encoder()
 
     def _ensure_files_exist(self):
-        """Download index and metadata files if hosted on cloud storage URL."""
+        """Download index and metadata files from Hugging Face dataset if missing on server."""
         if not os.path.exists(self.index_path) and DEFAULT_INDEX_URL:
-            print(f"[Download] Downloading FAISS index from {DEFAULT_INDEX_URL}...")
+            print(f"[Hugging Face] Downloading 614 MB FAISS index from {DEFAULT_INDEX_URL}...")
             try:
                 urllib.request.urlretrieve(DEFAULT_INDEX_URL, self.index_path)
-                print("[Download] FAISS index download complete!")
+                print("[Hugging Face] FAISS index download complete!")
             except Exception as e:
                 print(f"[Download Error] FAISS index download failed: {e}")
 
         if not os.path.exists(self.metadata_path) and DEFAULT_META_URL:
-            print(f"[Download] Downloading Metadata file from {DEFAULT_META_URL}...")
+            print(f"[Hugging Face] Downloading 112 MB Metadata file from {DEFAULT_META_URL}...")
             try:
                 urllib.request.urlretrieve(DEFAULT_META_URL, self.metadata_path)
-                print("[Download] Metadata file download complete!")
+                print("[Hugging Face] Metadata file download complete!")
             except Exception as e:
                 print(f"[Download Error] Metadata download failed: {e}")
 
@@ -76,7 +83,7 @@ class FAISSMetadataRetriever:
         print(f"[FAISS] Loaded {self.total_vectors:,} vectors with dimension {self.vector_dim} in {time.time()-start:.2f}s")
 
     def _load_metadata_offsets(self):
-        """Build in-memory byte offset index for metadata file."""
+        """Build in-memory byte offset index for metadata file (takes ~0.08s)."""
         if not os.path.exists(self.metadata_path):
             print(f"[Metadata Warning] Metadata file not found at '{self.metadata_path}'.")
             return
@@ -93,16 +100,16 @@ class FAISSMetadataRetriever:
         self._meta_file = open(self.metadata_path, 'rb')
         print(f"[Metadata] Indexed {len(self.line_offsets):,} line offsets in {time.time()-start:.2f}s")
 
-    def _get_encoder(self):
-        """Lazy load encoder on demand to keep startup memory < 50 MB."""
-        if self.encoder is None:
-            print(f"[Encoder] Lazy loading embedding model '{self.model_name}' (~80 MB RAM)...")
-            start = time.time()
-            self.encoder = SentenceTransformer(self.model_name)
-            with torch.inference_mode():
-                self.encoder.encode(["warmup query"], normalize_embeddings=True)
-            print(f"[Encoder] Model loaded in {time.time()-start:.2f}s")
-        return self.encoder
+    def _load_encoder(self):
+        print(f"[Encoder] Loading embedding model '{self.model_name}'...")
+        start = time.time()
+        self.encoder = SentenceTransformer(self.model_name)
+        
+        # Pre-warm PyTorch model
+        with torch.inference_mode():
+            self.encoder.encode(["warmup query"], normalize_embeddings=True)
+            
+        print(f"[Encoder] Model loaded & pre-warmed in {time.time()-start:.2f}s")
 
     def _get_metadata_by_line(self, line_idx: int) -> dict:
         """O(1) random access metadata lookup using byte offsets."""
@@ -129,11 +136,8 @@ class FAISSMetadataRetriever:
         if not query or not query.strip() or self.total_vectors == 0:
             return []
 
-        # Get lazy-loaded encoder
-        encoder = self._get_encoder()
-
         # Encode query to numpy array
-        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
+        query_vec = self.encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index
