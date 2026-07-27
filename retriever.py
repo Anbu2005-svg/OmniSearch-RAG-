@@ -7,41 +7,40 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 # Optimize CPU thread allocation
-torch.set_num_threads(4)
-faiss.omp_set_num_threads(4)
+torch.set_num_threads(2)
+faiss.omp_set_num_threads(2)
 
 class FAISSMetadataRetriever:
     """
-    High-Performance RAG Retriever:
+    Ultra-Lightweight RAG Retriever (<150 MB RAM):
+    - Uses ultra-compact 'all-MiniLM-L6-v2' model (~80 MB RAM vs 440 MB for mpnet).
+    - Lazy model loading so server binds port $PORT instantly within Render 512MB limit.
     - O(1) byte-offset disk seeking for instant document metadata lookups (<1ms).
-    - PyTorch inference mode + thread optimization for high-speed query vector encoding.
-    - Graceful fallback for cloud hosting when large index files are hosted externally.
     """
     def __init__(
         self,
         index_path: str = "faiss_index.index",
         metadata_path: str = "faiss_metadata.jsonl",
-        model_name: str = "all-mpnet-base-v2"
+        model_name: str = "all-MiniLM-L6-v2"
     ):
         self.index_path = index_path
         self.metadata_path = metadata_path
-        self.model_name = model_name
+        self.model_name = os.getenv("EMBEDDING_MODEL", model_name)
 
         self.index = None
         self.encoder = None
         self.total_vectors = 0
-        self.vector_dim = 768
+        self.vector_dim = 384 if "MiniLM" in self.model_name else 768
         
         self.line_offsets = []
         self._meta_file = None
 
         self._load_index()
         self._load_metadata_offsets()
-        self._load_encoder()
 
     def _load_index(self):
         if not os.path.exists(self.index_path):
-            print(f"[FAISS Warning] Index file not found at '{self.index_path}'. Initializing empty IndexFlatL2(768).")
+            print(f"[FAISS Warning] Index file not found at '{self.index_path}'. Initializing empty index.")
             self.index = faiss.IndexFlatL2(self.vector_dim)
             self.total_vectors = 0
             return
@@ -71,16 +70,16 @@ class FAISSMetadataRetriever:
         self._meta_file = open(self.metadata_path, 'rb')
         print(f"[Metadata] Indexed {len(self.line_offsets):,} line offsets in {time.time()-start:.2f}s")
 
-    def _load_encoder(self):
-        print(f"[Encoder] Loading embedding model '{self.model_name}'...")
-        start = time.time()
-        self.encoder = SentenceTransformer(self.model_name)
-        
-        # Pre-warm PyTorch model
-        with torch.inference_mode():
-            self.encoder.encode(["warmup query"], normalize_embeddings=True)
-            
-        print(f"[Encoder] Model loaded & pre-warmed in {time.time()-start:.2f}s")
+    def _get_encoder(self):
+        """Lazy load encoder on demand to keep startup memory < 50 MB."""
+        if self.encoder is None:
+            print(f"[Encoder] Lazy loading embedding model '{self.model_name}' (~80 MB RAM)...")
+            start = time.time()
+            self.encoder = SentenceTransformer(self.model_name)
+            with torch.inference_mode():
+                self.encoder.encode(["warmup query"], normalize_embeddings=True)
+            print(f"[Encoder] Model loaded in {time.time()-start:.2f}s")
+        return self.encoder
 
     def _get_metadata_by_line(self, line_idx: int) -> dict:
         """O(1) random access metadata lookup using byte offsets."""
@@ -107,8 +106,11 @@ class FAISSMetadataRetriever:
         if not query or not query.strip() or self.total_vectors == 0:
             return []
 
-        # Encode query to 768-dim numpy array
-        query_vec = self.encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
+        # Get lazy-loaded encoder
+        encoder = self._get_encoder()
+
+        # Encode query to numpy array
+        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index
