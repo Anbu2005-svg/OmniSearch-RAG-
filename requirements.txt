@@ -1,0 +1,11 @@
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+torch
+streamlit>=1.30.0
+requests
+pandas
+numpy
+python-dotenv
+fastapi
+uvicorn[standard]
+python-multipart
