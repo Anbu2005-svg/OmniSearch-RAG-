@@ -44,7 +44,7 @@ class FAISSMetadataRetriever:
             raise FileNotFoundError(f"FAISS index file not found at: {self.index_path}")
         print(f"[FAISS] Loading index from {self.index_path}...")
         start = time.time()
-        self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP)
+        self.index = faiss.read_index(self.index_path)
         self.total_vectors = self.index.ntotal
         self.vector_dim = self.index.d
         print(f"[FAISS] Loaded {self.total_vectors:,} vectors with dimension {self.vector_dim} in {time.time()-start:.2f}s")
