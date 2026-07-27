@@ -14,7 +14,7 @@ from rag_engine import RAGEngine
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="RAG Intelligence API",
+    title="OmniSearch RAG Intelligence API",
     description="Vector search and RAG answer generation over 200K document chunks",
     version="1.0.0"
 )
@@ -37,14 +37,17 @@ load_time = 0
 def startup_event():
     global retriever, engine, load_time
     start = time.time()
-    retriever = FAISSMetadataRetriever(
-        index_path="faiss_index.index",
-        metadata_path="faiss_metadata.jsonl",
-        model_name="all-mpnet-base-v2"
-    )
-    engine = RAGEngine(retriever=retriever)
-    load_time = time.time() - start
-    print(f"[Server] RAG Engine initialized in {load_time:.2f}s")
+    try:
+        retriever = FAISSMetadataRetriever(
+            index_path="faiss_index.index",
+            metadata_path="faiss_metadata.jsonl",
+            model_name="all-mpnet-base-v2"
+        )
+        engine = RAGEngine(retriever=retriever)
+        load_time = time.time() - start
+        print(f"[Server] RAG Engine initialized in {load_time:.2f}s")
+    except Exception as e:
+        print(f"[Server Startup Warning] Could not fully load FAISS index: {e}")
 
 
 # Request/Response models
@@ -67,13 +70,18 @@ class SearchResponse(BaseModel):
 
 
 # API Endpoints
+@app.get("/")
+def root_check():
+    return {"message": "OmniSearch RAG API is running live!", "docs": "/docs"}
+
+
 @app.get("/api/health")
 def health_check():
     return {
         "status": "ok" if retriever else "loading",
         "total_vectors": retriever.total_vectors if retriever else 0,
-        "vector_dim": retriever.vector_dim if retriever else 0,
-        "model_name": retriever.model_name if retriever else "",
+        "vector_dim": retriever.vector_dim if retriever else 768,
+        "model_name": retriever.model_name if retriever else "all-mpnet-base-v2",
         "load_time": round(load_time, 2)
     }
 
@@ -90,10 +98,10 @@ def get_stats():
 
     return {
         "total_vectors": retriever.total_vectors if retriever else 0,
-        "vector_dim": retriever.vector_dim if retriever else 0,
+        "vector_dim": retriever.vector_dim if retriever else 768,
         "index_size_mb": index_size_mb,
         "metadata_size_mb": metadata_size_mb,
-        "model_name": retriever.model_name if retriever else "",
+        "model_name": retriever.model_name if retriever else "all-mpnet-base-v2",
         "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
         "model_configured": os.getenv("MODEL_NAME", "llama3"),
         "engine_ready": engine is not None
@@ -104,7 +112,7 @@ def get_stats():
 def search(req: SearchRequest):
     if not engine:
         return SearchResponse(
-            answer="Engine is still loading. Please wait.",
+            answer="Engine is initializing. Please wait.",
             sources=[],
             query=req.query,
             corrected_query=req.query,
@@ -134,4 +142,5 @@ def search(req: SearchRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

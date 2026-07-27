@@ -6,7 +6,7 @@ import faiss
 import torch
 from sentence_transformers import SentenceTransformer
 
-# Optimize CPU thread allocation for sub-50ms performance
+# Optimize CPU thread allocation
 torch.set_num_threads(4)
 faiss.omp_set_num_threads(4)
 
@@ -14,8 +14,8 @@ class FAISSMetadataRetriever:
     """
     High-Performance RAG Retriever:
     - O(1) byte-offset disk seeking for instant document metadata lookups (<1ms).
-    - PyTorch inference mode + thread optimization for 3x-5x faster query vector encoding.
-    - Model pre-warming for zero-cold-start latency.
+    - PyTorch inference mode + thread optimization for high-speed query vector encoding.
+    - Graceful fallback for cloud hosting when large index files are hosted externally.
     """
     def __init__(
         self,
@@ -30,7 +30,7 @@ class FAISSMetadataRetriever:
         self.index = None
         self.encoder = None
         self.total_vectors = 0
-        self.vector_dim = 0
+        self.vector_dim = 768
         
         self.line_offsets = []
         self._meta_file = None
@@ -41,7 +41,11 @@ class FAISSMetadataRetriever:
 
     def _load_index(self):
         if not os.path.exists(self.index_path):
-            raise FileNotFoundError(f"FAISS index file not found at: {self.index_path}")
+            print(f"[FAISS Warning] Index file not found at '{self.index_path}'. Initializing empty IndexFlatL2(768).")
+            self.index = faiss.IndexFlatL2(self.vector_dim)
+            self.total_vectors = 0
+            return
+
         print(f"[FAISS] Loading index from {self.index_path}...")
         start = time.time()
         self.index = faiss.read_index(self.index_path)
@@ -50,9 +54,9 @@ class FAISSMetadataRetriever:
         print(f"[FAISS] Loaded {self.total_vectors:,} vectors with dimension {self.vector_dim} in {time.time()-start:.2f}s")
 
     def _load_metadata_offsets(self):
-        """Build in-memory byte offset index for 200,000 lines in metadata file (takes ~0.08s)."""
+        """Build in-memory byte offset index for metadata file."""
         if not os.path.exists(self.metadata_path):
-            print(f"[Metadata] Warning: Metadata file not found at {self.metadata_path}")
+            print(f"[Metadata Warning] Metadata file not found at '{self.metadata_path}'.")
             return
         
         print(f"[Metadata] Building fast byte-offset index for {self.metadata_path}...")
@@ -72,7 +76,7 @@ class FAISSMetadataRetriever:
         start = time.time()
         self.encoder = SentenceTransformer(self.model_name)
         
-        # Pre-warm PyTorch model so initial search has zero cold-start delay
+        # Pre-warm PyTorch model
         with torch.inference_mode():
             self.encoder.encode(["warmup query"], normalize_embeddings=True)
             
@@ -100,22 +104,21 @@ class FAISSMetadataRetriever:
         Perform high-speed vector similarity search for a query string.
         Returns a list of dictionary matches with document text and metadata.
         """
-        if not query or not query.strip():
+        if not query or not query.strip() or self.total_vectors == 0:
             return []
 
-        # Encode query to 768-dim numpy array under torch.inference_mode()
+        # Encode query to 768-dim numpy array
         query_vec = self.encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index
-        distances, indices = self.index.search(query_vec, top_k)
+        distances, indices = self.index.search(query_vec, min(top_k, self.total_vectors))
 
         results = []
         for rank, (dist, idx) in enumerate(zip(distances[0], indices[0]), start=1):
             if idx < 0:
                 continue
             
-            # Distance to approximate similarity score (Cosine distance = 1 - similarity if L2 normalized)
             similarity = max(0.0, 1.0 - float(dist)) if dist <= 2.0 else float(1.0 / (1.0 + dist))
             
             if similarity < score_threshold:
@@ -134,21 +137,3 @@ class FAISSMetadataRetriever:
             })
 
         return results
-
-
-if __name__ == "__main__":
-    print("Testing FAISSMetadataRetriever high-performance benchmark...")
-    retriever = FAISSMetadataRetriever()
-    
-    # Run multiple benchmark queries to measure latency
-    queries = [
-        "quality of petrol and diesel fuels directive",
-        "ultra-fine particle emissions from GDI engines",
-        "emergency fuel availability and quality exemptions"
-    ]
-    
-    for q in queries:
-        start = time.time()
-        res = retriever.search(q, top_k=5)
-        search_time = (time.time() - start) * 1000  # in ms
-        print(f"Query: '{q[:30]}...' -> Completed in {search_time:.2f} ms! Matches: {len(res)}")
