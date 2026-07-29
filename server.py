@@ -87,6 +87,7 @@ class SearchResponse(BaseModel):
 
 
 @app.get("/")
+@app.head("/")
 def root_check():
     return {"message": "OmniSearch RAG API is running live!", "docs": "/docs"}
 
