@@ -67,6 +67,12 @@ def init_engine():
             _init_started = False
         return False
 
+@app.on_event("startup")
+def startup_event():
+    # Start the engine initialization in the background immediately on boot
+    # This allows Uvicorn to bind to the port instantly and pass Render's health checks,
+    # while the large files download in the background without hitting the 100s HTTP timeout.
+    threading.Thread(target=init_engine, daemon=True).start()
 
 class SearchRequest(BaseModel):
     query: str
