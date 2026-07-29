@@ -1,6 +1,7 @@
 import os
 import time
 import gc
+import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -29,10 +30,25 @@ app.add_middleware(
 retriever = None
 engine = None
 load_time = 0
+_init_lock = threading.Lock()
+_init_started = False
 
-@app.on_event("startup")
-def startup_event():
-    global retriever, engine, load_time
+
+def init_engine():
+    """Lazy, thread-safe initialization of retriever and engine."""
+    global retriever, engine, load_time, _init_started
+
+    if retriever is not None and engine is not None:
+        return True
+
+    if _init_started:
+        return False
+
+    with _init_lock:
+        if retriever is not None and engine is not None:
+            return True
+        _init_started = True
+
     start = time.time()
     try:
         retriever = FAISSMetadataRetriever(
@@ -44,8 +60,12 @@ def startup_event():
         load_time = time.time() - start
         print(f"[Server] RAG Engine initialized in {load_time:.2f}s")
         gc.collect()
+        return True
     except Exception as e:
-        print(f"[Server Startup Warning] Could not fully load FAISS index: {e}")
+        print(f"[Server Init Error] Could not initialize RAG engine: {e}")
+        with _init_lock:
+            _init_started = False
+        return False
 
 
 class SearchRequest(BaseModel):
@@ -73,8 +93,9 @@ def root_check():
 
 @app.get("/api/health")
 def health_check():
+    ready = init_engine()
     return {
-        "status": "ok" if retriever else "loading",
+        "status": "ok" if ready else "warming_up",
         "total_vectors": retriever.total_vectors if retriever else 0,
         "vector_dim": retriever.vector_dim if retriever else 768,
         "model_name": retriever.model_name if retriever else "all-mpnet-base-v2",
@@ -106,9 +127,10 @@ def get_stats():
 
 @app.post("/api/search", response_model=SearchResponse)
 def search(req: SearchRequest):
-    if not engine:
+    ready = init_engine()
+    if not ready:
         return SearchResponse(
-            answer="Engine is initializing. Please wait.",
+            answer="Engine is warming up. Please wait a moment and retry.",
             sources=[],
             query=req.query,
             corrected_query=req.query,
