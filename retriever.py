@@ -84,7 +84,12 @@ class FAISSMetadataRetriever:
         print(f"[FAISS] Loading index from {self.index_path}...")
         start = time.time()
         
-        self.index = faiss.read_index(self.index_path)
+        try:
+            # Use MMAP to avoid loading the entire index into RAM, preventing OOM crashes
+            self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP)
+        except Exception:
+            # Fallback for some systems if MMAP fails
+            self.index = faiss.read_index(self.index_path)
 
         self.total_vectors = self.index.ntotal
         self.vector_dim = self.index.d
