@@ -1,4 +1,5 @@
 import os
+import gc
 import json
 import time
 import urllib.request
@@ -7,9 +8,8 @@ import faiss
 import torch
 from sentence_transformers import SentenceTransformer
 
-# Optimize CPU thread allocation
-torch.set_num_threads(2)
-faiss.omp_set_num_threads(2)
+torch.set_num_threads(1)
+faiss.omp_set_num_threads(1)
 
 # Cloud Dataset Download URLs
 DEFAULT_INDEX_URL = os.getenv(
@@ -88,7 +88,10 @@ class FAISSMetadataRetriever:
 
         self.total_vectors = self.index.ntotal
         self.vector_dim = self.index.d
-        print(f"[FAISS] Loaded {self.total_vectors:,} vectors in {time.time()-start:.2f}s (<30 MB RAM)")
+        if IS_CLOUD:
+            faiss.omp_set_num_threads(1)
+        print(f"[FAISS] Loaded {self.total_vectors:,} vectors in {time.time()-start:.2f}s")
+        gc.collect()
 
     def _load_metadata_offsets(self):
         """Build in-memory byte offset index for metadata file."""
@@ -113,19 +116,22 @@ class FAISSMetadataRetriever:
         if self.encoder is None:
             print(f"[Encoder] Loading embedding model '{self.model_name}'...")
             start = time.time()
-            self.encoder = SentenceTransformer(self.model_name)
+            self.encoder = SentenceTransformer(self.model_name, device='cpu')
             
             # Apply INT8 dynamic quantization for cloud environments (Render)
             if IS_CLOUD:
-                print("[Encoder] Applying INT8 dynamic quantization to reduce RAM from 440MB -> ~110MB...")
+                print("[Encoder] Applying INT8 dynamic quantization to reduce RAM...")
                 self.encoder[0].auto_model = torch.quantization.quantize_dynamic(
                     self.encoder[0].auto_model,
                     {torch.nn.Linear},
                     dtype=torch.qint8
                 )
+                if hasattr(self.encoder[0], 'max_seq_length'):
+                    self.encoder[0].max_seq_length = 128
+                gc.collect()
             
             with torch.inference_mode():
-                self.encoder.encode(["warmup query"], normalize_embeddings=True)
+                self.encoder.encode(["warmup query"], normalize_embeddings=True, show_progress_bar=False)
             print(f"[Encoder] Model loaded and pre-warmed in {time.time()-start:.2f}s")
         return self.encoder
 
@@ -157,7 +163,7 @@ class FAISSMetadataRetriever:
         encoder = self._get_encoder()
 
         # Encode query to numpy array
-        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
+        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False, truncate=True)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index

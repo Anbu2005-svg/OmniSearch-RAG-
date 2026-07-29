@@ -1,12 +1,12 @@
 import os
 import re
 import json
+import gc
 import requests
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 from retriever import FAISSMetadataRetriever
 
-# Load backend .env configuration
 load_dotenv(override=True)
 
 # Common domain dictionary for fast rule-based spelling correction
@@ -72,9 +72,6 @@ class RAGEngine:
         """
         Processes a user query by first auto-correcting typos, performing FAISS retrieval, and synthesizing an answer.
         """
-        # Reload env in case it changed
-        load_dotenv(override=True)
-
         provider = (llm_provider or os.getenv("LLM_PROVIDER", "ollama")).strip().lower()
         url = (api_url or os.getenv("OLLAMA_API_URL", "http://localhost:11434")).strip()
         key = (api_key or os.getenv("OLLAMA_API_KEY") or os.getenv("OPENAI_API_KEY", "")).strip()
@@ -118,8 +115,8 @@ class RAGEngine:
         body_points = []
         for i, chunk in enumerate(chunks[:3], 1):
             snippet = chunk['text'].strip()
-            if len(snippet) > 300:
-                snippet = snippet[:297] + "..."
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "..."
             body_points.append(f"**[Source {i} - Doc #{chunk['doc_id']} Chunk #{chunk['chunk_id']}]**\n> \"{snippet}\"")
 
         summary_text = "\n\n".join(body_points)
@@ -144,7 +141,7 @@ class RAGEngine:
         else:
             generate_url = base_endpoint
 
-        context_str = "\n\n".join([f"Document {c['doc_id']}:\n{c['text']}" for c in chunks])
+        context_str = "\n\n".join([f"Document {c['doc_id']}:\n{c['text'][:500]}" for c in chunks])
         prompt = (
             f"You are a helpful RAG assistant. Answer the user's question accurately using ONLY the context provided below.\n\n"
             f"CONTEXT:\n{context_str}\n\n"
@@ -163,9 +160,11 @@ class RAGEngine:
         }
 
         try:
-            res = requests.post(generate_url, json=payload, headers=headers, timeout=5)
+            res = requests.post(generate_url, json=payload, headers=headers, timeout=10)
             res.raise_for_status()
             data = res.json()
+            del payload
+            gc.collect()
             return data.get("response", str(data))
         except Exception:
             return self._local_synthesize(query, chunks)
@@ -186,7 +185,7 @@ class RAGEngine:
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
 
-        context_str = "\n\n".join([f"Document {c['doc_id']}:\n{c['text']}" for c in chunks])
+        context_str = "\n\n".join([f"Document {c['doc_id']}:\n{c['text'][:500]}" for c in chunks])
         system_msg = "You are an intelligent RAG query engine. Answer questions using only the provided context documents."
         user_msg = f"Context:\n{context_str}\n\nUser Question: {query}"
 
@@ -206,9 +205,11 @@ class RAGEngine:
         }
 
         try:
-            res = requests.post(endpoint, json=payload, headers=headers, timeout=5)
+            res = requests.post(endpoint, json=payload, headers=headers, timeout=10)
             res.raise_for_status()
             data = res.json()
+            del payload
+            gc.collect()
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
             return str(data)

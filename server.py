@@ -1,25 +1,23 @@
 import os
 import time
+import gc
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 from retriever import FAISSMetadataRetriever
 from rag_engine import RAGEngine
 
-# Initialize FastAPI app
 app = FastAPI(
     title="OmniSearch RAG Intelligence API",
-    description="Vector search and RAG answer generation over 200K document chunks",
+    description="Vector search and RAG answer generation",
     version="1.0.0"
 )
 
-# CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global instances loaded once at startup
 retriever = None
 engine = None
 load_time = 0
@@ -46,11 +43,11 @@ def startup_event():
         engine = RAGEngine(retriever=retriever)
         load_time = time.time() - start
         print(f"[Server] RAG Engine initialized in {load_time:.2f}s")
+        gc.collect()
     except Exception as e:
         print(f"[Server Startup Warning] Could not fully load FAISS index: {e}")
 
 
-# Request/Response models
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 5
@@ -69,7 +66,6 @@ class SearchResponse(BaseModel):
     latency: float
 
 
-# API Endpoints
 @app.get("/")
 def root_check():
     return {"message": "OmniSearch RAG API is running live!", "docs": "/docs"}
@@ -143,4 +139,4 @@ def search(req: SearchRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False, workers=1)
