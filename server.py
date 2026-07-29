@@ -54,7 +54,7 @@ def init_engine():
         retriever = FAISSMetadataRetriever(
             index_path="faiss_index_8bit.index",
             metadata_path="faiss_metadata.jsonl",
-            model_name="all-mpnet-base-v2"
+            model_name="all-MiniLM-L6-v2"
         )
         engine = RAGEngine(retriever=retriever)
         load_time = time.time() - start
@@ -97,8 +97,8 @@ def health_check():
     return {
         "status": "ok" if ready else "warming_up",
         "total_vectors": retriever.total_vectors if retriever else 0,
-        "vector_dim": retriever.vector_dim if retriever else 768,
-        "model_name": retriever.model_name if retriever else "all-mpnet-base-v2",
+        "vector_dim": retriever.vector_dim if retriever else 384,
+        "model_name": retriever.model_name if retriever else "all-MiniLM-L6-v2",
         "load_time": round(load_time, 2)
     }
 
@@ -115,10 +115,10 @@ def get_stats():
 
     return {
         "total_vectors": retriever.total_vectors if retriever else 0,
-        "vector_dim": retriever.vector_dim if retriever else 768,
+        "vector_dim": retriever.vector_dim if retriever else 384,
         "index_size_mb": index_size_mb,
         "metadata_size_mb": metadata_size_mb,
-        "model_name": retriever.model_name if retriever else "all-mpnet-base-v2",
+        "model_name": retriever.model_name if retriever else "all-MiniLM-L6-v2",
         "llm_provider": os.getenv("LLM_PROVIDER", "ollama"),
         "model_configured": os.getenv("MODEL_NAME", "llama3"),
         "engine_ready": engine is not None

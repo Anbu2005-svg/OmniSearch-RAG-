@@ -30,15 +30,15 @@ IS_CLOUD = (
 
 class FAISSMetadataRetriever:
     """
-    RAG Retriever Guaranteed under 512 MB RAM (768-dim accuracy):
-    - Uses 8-bit FAISS Index (reduces RAM from 614MB to 153MB).
-    - Cloud Mode: Uses INT8 Dynamic Quantization on 'all-mpnet-base-v2' (reduces RAM from 440MB to ~110MB).
+    RAG Retriever optimized for low-RAM deployments (384-dim MiniLM):
+    - Uses 8-bit FAISS Index (~76 MB for 200K chunks).
+    - Cloud Mode: Uses INT8 Dynamic Quantization on 'all-MiniLM-L6-v2' (~55 MB).
     """
     def __init__(
         self,
         index_path: str = "faiss_index_8bit.index",
         metadata_path: str = "faiss_metadata.jsonl",
-        model_name: str = "all-mpnet-base-v2"
+        model_name: str = "all-MiniLM-L6-v2"
     ):
         self.index_path = index_path
         self.metadata_path = metadata_path
@@ -47,7 +47,7 @@ class FAISSMetadataRetriever:
         self.index = None
         self.encoder = None
         self.total_vectors = 0
-        self.vector_dim = 768
+        self.vector_dim = 384
         
         self.line_offsets = []
         self._meta_file = None
@@ -94,7 +94,7 @@ class FAISSMetadataRetriever:
         gc.collect()
 
     def _load_metadata_offsets(self):
-        """Build in-memory byte offset index for metadata file."""
+        """Build compact in-memory byte offset index for metadata file."""
         if not os.path.exists(self.metadata_path):
             print(f"[Metadata Warning] Metadata file not found at '{self.metadata_path}'.")
             return
@@ -108,7 +108,9 @@ class FAISSMetadataRetriever:
                 self.line_offsets.append(offset)
                 offset += len(line)
         
-        self._meta_file = open(self.metadata_path, 'rb')
+        # Close file handle to free OS buffers
+        self._meta_file = None
+        gc.collect()
         print(f"[Metadata] Indexed {len(self.line_offsets):,} line offsets in {time.time()-start:.2f}s")
 
     def _get_encoder(self):
@@ -137,15 +139,19 @@ class FAISSMetadataRetriever:
 
     def _get_metadata_by_line(self, line_idx: int) -> dict:
         """O(1) random access metadata lookup using byte offsets."""
-        if not self._meta_file or line_idx < 0 or line_idx >= len(self.line_offsets):
+        if line_idx < 0 or line_idx >= len(self.line_offsets):
+            return {"doc_id": line_idx, "chunk_id": 0, "text": "", "meta": {}}
+
+        if not os.path.exists(self.metadata_path):
             return {"doc_id": line_idx, "chunk_id": 0, "text": "", "meta": {}}
 
         try:
             offset = self.line_offsets[line_idx]
-            self._meta_file.seek(offset)
-            line = self._meta_file.readline()
-            if line:
-                return json.loads(line.decode('utf-8'))
+            with open(self.metadata_path, 'rb') as f:
+                f.seek(offset)
+                line = f.readline()
+                if line:
+                    return json.loads(line.decode('utf-8'))
         except Exception as e:
             print(f"[Metadata Error] Line {line_idx}: {e}")
         
