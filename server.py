@@ -39,7 +39,7 @@ def startup_event():
     start = time.time()
     try:
         retriever = FAISSMetadataRetriever(
-            index_path="faiss_index.index",
+            index_path="faiss_index_8bit.index",
             metadata_path="faiss_metadata.jsonl",
             model_name="all-mpnet-base-v2"
         )
@@ -89,8 +89,8 @@ def health_check():
 @app.get("/api/stats")
 def get_stats():
     index_size_mb = 0
-    if os.path.exists("faiss_index.index"):
-        index_size_mb = round(os.path.getsize("faiss_index.index") / (1024 * 1024), 1)
+    if os.path.exists("faiss_index_8bit.index"):
+        index_size_mb = round(os.path.getsize("faiss_index_8bit.index") / (1024 * 1024), 1)
     
     metadata_size_mb = 0
     if os.path.exists("faiss_metadata.jsonl"):

@@ -14,7 +14,7 @@ faiss.omp_set_num_threads(2)
 # Cloud Dataset Download URLs
 DEFAULT_INDEX_URL = os.getenv(
     "INDEX_DOWNLOAD_URL",
-    "https://huggingface.co/datasets/Anbanand/OmniSearch_RAG/resolve/main/faiss_index.index"
+    "https://huggingface.co/datasets/Anbanand/OmniSearch_RAG/resolve/main/faiss_index_8bit.index"
 )
 DEFAULT_META_URL = os.getenv(
     "METADATA_DOWNLOAD_URL",
@@ -31,12 +31,12 @@ IS_CLOUD = (
 class FAISSMetadataRetriever:
     """
     RAG Retriever Guaranteed under 512 MB RAM (768-dim accuracy):
-    - Uses FAISS Memory Mapping (IO_FLAG_MMAP) so 614 MB vector index stays on disk (<30 MB RAM).
+    - Uses 8-bit FAISS Index (reduces RAM from 614MB to 153MB).
     - Cloud Mode: Uses INT8 Dynamic Quantization on 'all-mpnet-base-v2' (reduces RAM from 440MB to ~110MB).
     """
     def __init__(
         self,
-        index_path: str = "faiss_index.index",
+        index_path: str = "faiss_index_8bit.index",
         metadata_path: str = "faiss_metadata.jsonl",
         model_name: str = "all-mpnet-base-v2"
     ):
