@@ -41,7 +41,9 @@ frontend/.vite/
 *.log
 
 # IDE & OS
+.kilo/
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
