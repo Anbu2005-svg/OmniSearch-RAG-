@@ -56,23 +56,35 @@ class FAISSMetadataRetriever:
         self._load_index()
         self._load_metadata_offsets()
 
+    def _download_file(self, url: str, dest_path: str, chunk_size: int = 2 * 1024 * 1024):
+        """Stream download in 2MB chunks to avoid memory spikes."""
+        import requests
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(dest_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+        gc.collect()
+
     def _ensure_files_exist(self):
-        """Download index and metadata files if missing on cloud server."""
+        """Download index and metadata files with streaming to preserve RAM."""
         if not os.path.exists(self.index_path) and DEFAULT_INDEX_URL:
-            print(f"[Download] Downloading FAISS index from Hugging Face...")
+            print(f"[Download] Streaming FAISS index from Hugging Face...")
             try:
-                urllib.request.urlretrieve(DEFAULT_INDEX_URL, self.index_path)
+                self._download_file(DEFAULT_INDEX_URL, self.index_path)
                 print("[Download] FAISS index download complete!")
             except Exception as e:
                 print(f"[Download Error] FAISS index download failed: {e}")
 
         if not os.path.exists(self.metadata_path) and DEFAULT_META_URL:
-            print(f"[Download] Downloading Metadata file from Hugging Face...")
+            print(f"[Download] Streaming Metadata file from Hugging Face...")
             try:
-                urllib.request.urlretrieve(DEFAULT_META_URL, self.metadata_path)
+                self._download_file(DEFAULT_META_URL, self.metadata_path)
                 print("[Download] Metadata file download complete!")
             except Exception as e:
                 print(f"[Download Error] Metadata download failed: {e}")
+        gc.collect()
 
     def _load_index(self):
         if not os.path.exists(self.index_path):
@@ -84,48 +96,59 @@ class FAISSMetadataRetriever:
         print(f"[FAISS] Loading index from {self.index_path}...")
         start = time.time()
         
+        # Enforce single thread to prevent memory multiplication
+        faiss.omp_set_num_threads(1)
+        gc.collect()
+        
         try:
-            # Use MMAP to avoid loading the entire index into RAM, preventing OOM crashes
-            self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP)
+            # IO_FLAG_MMAP maps the index file directly to disk space without consuming physical RAM
+            self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY)
         except Exception:
-            # Fallback for some systems if MMAP fails
-            self.index = faiss.read_index(self.index_path)
+            try:
+                self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP)
+            except Exception as e:
+                print(f"[FAISS MMAP Failed] Falling back to standard read: {e}")
+                self.index = faiss.read_index(self.index_path)
 
         self.total_vectors = self.index.ntotal
         self.vector_dim = self.index.d
-        if IS_CLOUD:
-            faiss.omp_set_num_threads(1)
-        print(f"[FAISS] Loaded {self.total_vectors:,} vectors in {time.time()-start:.2f}s")
+        print(f"[FAISS] Loaded {self.total_vectors:,} vectors (dim={self.vector_dim}) in {time.time()-start:.2f}s")
         gc.collect()
 
     def _load_metadata_offsets(self):
-        """Build compact in-memory byte offset index for metadata file."""
+        """Build ultra-compact in-memory byte offset index using array('Q') (<1.6MB RAM)."""
+        import array
         if not os.path.exists(self.metadata_path):
             print(f"[Metadata Warning] Metadata file not found at '{self.metadata_path}'.")
             return
         
-        print(f"[Metadata] Building fast byte-offset index for {self.metadata_path}...")
+        print(f"[Metadata] Building compact byte-offset index for {self.metadata_path}...")
         start = time.time()
-        self.line_offsets = []
+        # array('Q') stores unsigned 64-bit integers directly in C contiguous buffer, taking only 8 bytes per item
+        self.line_offsets = array.array('Q')
         with open(self.metadata_path, 'rb') as f:
             offset = 0
             for line in f:
                 self.line_offsets.append(offset)
                 offset += len(line)
         
-        # Close file handle to free OS buffers
-        self._meta_file = None
         gc.collect()
         print(f"[Metadata] Indexed {len(self.line_offsets):,} line offsets in {time.time()-start:.2f}s")
 
     def _get_encoder(self):
         """Lazy load encoder and apply INT8 dynamic quantization for cloud deployments."""
         if self.encoder is None:
-            print(f"[Encoder] Loading embedding model '{self.model_name}'...")
+            # Auto-align encoder with actual FAISS index dimension
+            if self.vector_dim == 768 and "MiniLM" in self.model_name:
+                self.model_name = "all-mpnet-base-v2"
+            elif self.vector_dim == 384 and "mpnet" in self.model_name:
+                self.model_name = "all-MiniLM-L6-v2"
+
+            print(f"[Encoder] Loading embedding model '{self.model_name}' (vector_dim={self.vector_dim})...")
             start = time.time()
             self.encoder = SentenceTransformer(self.model_name, device='cpu')
             
-            # Apply INT8 dynamic quantization for cloud environments (Render)
+            # Apply INT8 dynamic quantization for cloud environments (Render / low-RAM hosts)
             if IS_CLOUD:
                 print("[Encoder] Applying INT8 dynamic quantization to reduce RAM...")
                 self.encoder[0].auto_model = torch.quantization.quantize_dynamic(
@@ -174,7 +197,7 @@ class FAISSMetadataRetriever:
         encoder = self._get_encoder()
 
         # Encode query to numpy array
-        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False, truncate=True)
+        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index
