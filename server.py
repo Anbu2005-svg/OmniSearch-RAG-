@@ -56,6 +56,8 @@ def init_engine():
             metadata_path="faiss_metadata_50k.jsonl",
             model_name="all-MiniLM-L6-v2"
         )
+        # Pre-warm encoder in background so first /api/search request does not block or timeout
+        retriever._get_encoder()
         engine = RAGEngine(retriever=retriever)
         load_time = time.time() - start
         print(f"[Server] RAG Engine initialized in {load_time:.2f}s")
