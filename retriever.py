@@ -36,8 +36,8 @@ class FAISSMetadataRetriever:
     """
     def __init__(
         self,
-        index_path: str = "faiss_index_8bit.index",
-        metadata_path: str = "faiss_metadata.jsonl",
+        index_path: str = "faiss_index_8bit_50k.index",
+        metadata_path: str = "faiss_metadata_50k.jsonl",
         model_name: str = "all-MiniLM-L6-v2"
     ):
         self.index_path = index_path

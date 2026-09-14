@@ -52,8 +52,8 @@ def init_engine():
     start = time.time()
     try:
         retriever = FAISSMetadataRetriever(
-            index_path="faiss_index_8bit.index",
-            metadata_path="faiss_metadata.jsonl",
+            index_path="faiss_index_8bit_50k.index",
+            metadata_path="faiss_metadata_50k.jsonl",
             model_name="all-MiniLM-L6-v2"
         )
         engine = RAGEngine(retriever=retriever)
@@ -113,12 +113,16 @@ def health_check():
 @app.get("/api/stats")
 def get_stats():
     index_size_mb = 0
-    if os.path.exists("faiss_index_8bit.index"):
-        index_size_mb = round(os.path.getsize("faiss_index_8bit.index") / (1024 * 1024), 1)
+    for idx_file in ["faiss_index_8bit_50k.index", "faiss_index_8bit.index"]:
+        if os.path.exists(idx_file):
+            index_size_mb = round(os.path.getsize(idx_file) / (1024 * 1024), 1)
+            break
     
     metadata_size_mb = 0
-    if os.path.exists("faiss_metadata.jsonl"):
-        metadata_size_mb = round(os.path.getsize("faiss_metadata.jsonl") / (1024 * 1024), 1)
+    for meta_file in ["faiss_metadata_50k.jsonl", "faiss_metadata.jsonl"]:
+        if os.path.exists(meta_file):
+            metadata_size_mb = round(os.path.getsize(meta_file) / (1024 * 1024), 1)
+            break
 
     return {
         "total_vectors": retriever.total_vectors if retriever else 0,

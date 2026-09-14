@@ -16,9 +16,10 @@ COPY retriever.py .
 COPY rag_engine.py .
 COPY server.py .
 
-# Copy data files (these must be present in the repo or volume)
-# For HuggingFace Spaces, upload these via Git LFS or the UI
-COPY faiss_index.index* ./
+# Copy bundled lightweight 50k dataset files
+COPY faiss_index_8bit_50k.index* ./
+COPY faiss_metadata_50k.jsonl* ./
+COPY faiss_index_8bit.index* ./
 COPY faiss_metadata.jsonl* ./
 
 # Expose port (default 7860, or dynamically assigned by host)

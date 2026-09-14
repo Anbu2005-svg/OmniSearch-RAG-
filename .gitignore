@@ -34,6 +34,8 @@ frontend/.vite/
 *.index
 *.jsonl
 *.bin
+!faiss_index_8bit_50k.index
+!faiss_metadata_50k.jsonl
 
 # Environment & local secrets
 .env
