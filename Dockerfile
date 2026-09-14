@@ -21,8 +21,8 @@ COPY server.py .
 COPY faiss_index.index* ./
 COPY faiss_metadata.jsonl* ./
 
-# Expose port 7860 (HuggingFace Spaces default)
-EXPOSE 7860
+# Expose port (default 7860, or dynamically assigned by host)
+EXPOSE 7860 80 8080 10000
 
-# Start FastAPI server on HuggingFace Spaces port
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]
+# Start FastAPI server, respecting the PORT environment variable if provided by the host
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-7860}"]
