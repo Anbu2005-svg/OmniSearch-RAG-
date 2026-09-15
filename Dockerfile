@@ -22,8 +22,8 @@ COPY faiss_metadata_50k.jsonl* ./
 COPY faiss_index_8bit.index* ./
 COPY faiss_metadata.jsonl* ./
 
-# Expose port (default 7860, or dynamically assigned by host)
-EXPOSE 7860 80 8080 10000
+# Expose port (default 10000 for SnapDeploy/Render, or dynamically assigned by host)
+EXPOSE 10000 8080 80 7860
 
 # Start FastAPI server, respecting the PORT environment variable if provided by the host
-CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-7860}"]
+CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]
