@@ -1,7 +1,7 @@
-faiss-cpu>=1.7.4
-sentence-transformers>=2.2.2
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
 requests
 numpy
 python-dotenv

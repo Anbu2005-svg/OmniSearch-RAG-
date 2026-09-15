@@ -3,11 +3,11 @@ services:
     name: omnisearch-rag-api
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: OPTIMIZE_RAM
-        value: true
+        value: "true"
       - key: LLM_PROVIDER
         value: ollama
       - key: MODEL_NAME
