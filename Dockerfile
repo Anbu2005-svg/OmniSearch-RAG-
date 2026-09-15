@@ -22,6 +22,9 @@ COPY faiss_metadata_50k.jsonl* ./
 COPY faiss_index_8bit.index* ./
 COPY faiss_metadata.jsonl* ./
 
+# Pre-download ONNX model during build (cached in image layer, ~25 MB)
+RUN python -c "from retriever import LightEncoder; e = LightEncoder(); e._ensure_files(); print('[Docker] ONNX model pre-downloaded')"
+
 # Expose port (default 10000 for SnapDeploy/Render, or dynamically assigned by host)
 EXPOSE 10000 8080 80 7860
 

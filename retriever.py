@@ -2,13 +2,11 @@ import os
 import gc
 import json
 import time
+import array
 import urllib.request
 import numpy as np
 import faiss
-import torch
-from sentence_transformers import SentenceTransformer
 
-torch.set_num_threads(1)
 faiss.omp_set_num_threads(1)
 
 # Cloud Dataset Download URLs
@@ -21,18 +19,136 @@ DEFAULT_META_URL = os.getenv(
     "https://huggingface.co/datasets/Anbanand/OmniSearch_RAG/resolve/main/faiss_metadata.jsonl"
 )
 
-# Auto-detect Cloud environment (Render sets PORT/RENDER env vars) or explicit OPTIMIZE_RAM
-IS_CLOUD = (
-    os.getenv("PORT") is not None or 
-    os.getenv("RENDER") is not None or 
-    os.getenv("OPTIMIZE_RAM", "false").lower() in ("true", "1", "yes")
-)
+# ONNX model files from HuggingFace (all-MiniLM-L6-v2)
+ONNX_MODEL_URL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+ONNX_TOKENIZER_URL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
+
+ONNX_MODEL_DIR = os.getenv("ONNX_MODEL_DIR", "onnx_model")
+
+
+class LightEncoder:
+    """
+    Ultra-lightweight sentence encoder using ONNX Runtime (~30 MB RAM).
+    Replaces PyTorch + sentence-transformers (~250 MB RAM).
+    Implements the same encode pipeline: tokenize → transformer → mean pooling → normalize.
+    """
+
+    def __init__(self, model_dir=ONNX_MODEL_DIR, max_seq_length=128):
+        self.model_dir = model_dir
+        self.max_seq_length = max_seq_length
+        self.session = None
+        self.tokenizer = None
+
+    def _ensure_files(self):
+        """Download ONNX model and tokenizer if not present."""
+        os.makedirs(self.model_dir, exist_ok=True)
+        model_path = os.path.join(self.model_dir, "model.onnx")
+        tokenizer_path = os.path.join(self.model_dir, "tokenizer.json")
+
+        if not os.path.exists(model_path):
+            print(f"[ONNX] Downloading model.onnx (~25 MB)...")
+            self._download(ONNX_MODEL_URL, model_path)
+            print(f"[ONNX] model.onnx downloaded.")
+
+        if not os.path.exists(tokenizer_path):
+            print(f"[ONNX] Downloading tokenizer.json...")
+            self._download(ONNX_TOKENIZER_URL, tokenizer_path)
+            print(f"[ONNX] tokenizer.json downloaded.")
+
+    def _download(self, url, dest, chunk_size=2 * 1024 * 1024):
+        """Stream download in 2 MB chunks to avoid RAM spikes."""
+        import requests
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(dest, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+        gc.collect()
+
+    def load(self):
+        """Lazy-load the ONNX model and tokenizer."""
+        if self.session is not None:
+            return
+
+        self._ensure_files()
+
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        start = time.time()
+
+        # Load tokenizer (Rust-based, ~5 MB RAM)
+        tokenizer_path = os.path.join(self.model_dir, "tokenizer.json")
+        self.tokenizer = Tokenizer.from_file(tokenizer_path)
+        self.tokenizer.enable_truncation(max_length=self.max_seq_length)
+        self.tokenizer.enable_padding(length=self.max_seq_length)
+
+        # Load ONNX session (CPU only, ~30 MB RAM)
+        model_path = os.path.join(self.model_dir, "model.onnx")
+        sess_opts = ort.SessionOptions()
+        sess_opts.inter_op_num_threads = 1
+        sess_opts.intra_op_num_threads = 1
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_opts,
+            providers=['CPUExecutionProvider']
+        )
+
+        # Cache input names for fast lookup
+        self._input_names = {inp.name for inp in self.session.get_inputs()}
+
+        # Pre-warm with a dummy query
+        self.encode(["warmup"], normalize_embeddings=True)
+
+        print(f"[ONNX Encoder] Loaded and pre-warmed in {time.time() - start:.2f}s")
+        gc.collect()
+
+    def encode(self, texts, normalize_embeddings=True, **kwargs):
+        """Encode texts to embeddings using ONNX Runtime (same output as SentenceTransformer)."""
+        if isinstance(texts, str):
+            texts = [texts]
+
+        # Tokenize
+        encodings = self.tokenizer.encode_batch(texts)
+        input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
+        attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
+
+        # Build feed dict (only include inputs the model expects)
+        feeds = {}
+        if 'input_ids' in self._input_names:
+            feeds['input_ids'] = input_ids
+        if 'attention_mask' in self._input_names:
+            feeds['attention_mask'] = attention_mask
+        if 'token_type_ids' in self._input_names:
+            feeds['token_type_ids'] = np.zeros_like(input_ids, dtype=np.int64)
+
+        # Run ONNX inference
+        outputs = self.session.run(None, feeds)
+
+        # Mean pooling over token embeddings (same as sentence-transformers)
+        token_embeddings = outputs[0].astype(np.float32)  # (batch, seq_len, hidden_dim)
+        seq_len = token_embeddings.shape[1]
+        mask = attention_mask[:, :seq_len, np.newaxis].astype(np.float32)
+        sum_embeddings = np.sum(token_embeddings * mask, axis=1)
+        sum_mask = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)
+        embeddings = sum_embeddings / sum_mask
+
+        # L2 normalize
+        if normalize_embeddings:
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / np.clip(norms, a_min=1e-9, a_max=None)
+
+        return embeddings
+
 
 class FAISSMetadataRetriever:
     """
     RAG Retriever optimized for low-RAM deployments (384-dim MiniLM):
-    - Uses 8-bit FAISS Index (~76 MB for 200K chunks).
-    - Cloud Mode: Uses INT8 Dynamic Quantization on 'all-MiniLM-L6-v2' (~55 MB).
+    - Uses 8-bit FAISS Index (memory-mapped).
+    - Uses ONNX Runtime encoder (~30 MB) instead of PyTorch (~250 MB).
+    - Total RAM: ~100 MB (fits in Render 512 MB free tier).
     """
     def __init__(
         self,
@@ -48,7 +164,7 @@ class FAISSMetadataRetriever:
         self.encoder = None
         self.total_vectors = 0
         self.vector_dim = 384
-        
+
         self.line_offsets = []
         self._meta_file = None
 
@@ -95,11 +211,11 @@ class FAISSMetadataRetriever:
 
         print(f"[FAISS] Loading index from {self.index_path}...")
         start = time.time()
-        
+
         # Enforce single thread to prevent memory multiplication
         faiss.omp_set_num_threads(1)
         gc.collect()
-        
+
         try:
             # IO_FLAG_MMAP maps the index file directly to disk space without consuming physical RAM
             self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY)
@@ -117,11 +233,10 @@ class FAISSMetadataRetriever:
 
     def _load_metadata_offsets(self):
         """Build ultra-compact in-memory byte offset index using array('Q') (<1.6MB RAM)."""
-        import array
         if not os.path.exists(self.metadata_path):
             print(f"[Metadata Warning] Metadata file not found at '{self.metadata_path}'.")
             return
-        
+
         print(f"[Metadata] Building compact byte-offset index for {self.metadata_path}...")
         start = time.time()
         # array('Q') stores unsigned 64-bit integers directly in C contiguous buffer, taking only 8 bytes per item
@@ -131,38 +246,16 @@ class FAISSMetadataRetriever:
             for line in f:
                 self.line_offsets.append(offset)
                 offset += len(line)
-        
+
         gc.collect()
         print(f"[Metadata] Indexed {len(self.line_offsets):,} line offsets in {time.time()-start:.2f}s")
 
     def _get_encoder(self):
-        """Lazy load encoder and apply INT8 dynamic quantization for cloud deployments."""
+        """Lazy load ONNX encoder (~30 MB RAM vs ~250 MB for PyTorch)."""
         if self.encoder is None:
-            # Auto-align encoder with actual FAISS index dimension
-            if self.vector_dim == 768 and "MiniLM" in self.model_name:
-                self.model_name = "all-mpnet-base-v2"
-            elif self.vector_dim == 384 and "mpnet" in self.model_name:
-                self.model_name = "all-MiniLM-L6-v2"
-
-            print(f"[Encoder] Loading embedding model '{self.model_name}' (vector_dim={self.vector_dim})...")
-            start = time.time()
-            self.encoder = SentenceTransformer(self.model_name, device='cpu')
-            
-            # Apply INT8 dynamic quantization for cloud environments (Render / low-RAM hosts)
-            if IS_CLOUD:
-                print("[Encoder] Applying INT8 dynamic quantization to reduce RAM...")
-                self.encoder[0].auto_model = torch.quantization.quantize_dynamic(
-                    self.encoder[0].auto_model,
-                    {torch.nn.Linear},
-                    dtype=torch.qint8
-                )
-                if hasattr(self.encoder[0], 'max_seq_length'):
-                    self.encoder[0].max_seq_length = 128
-                gc.collect()
-            
-            with torch.inference_mode():
-                self.encoder.encode(["warmup query"], normalize_embeddings=True, show_progress_bar=False)
-            print(f"[Encoder] Model loaded and pre-warmed in {time.time()-start:.2f}s")
+            print(f"[Encoder] Loading ONNX encoder for '{self.model_name}' (dim={self.vector_dim})...")
+            self.encoder = LightEncoder(model_dir=ONNX_MODEL_DIR, max_seq_length=128)
+            self.encoder.load()
         return self.encoder
 
     def _get_metadata_by_line(self, line_idx: int) -> dict:
@@ -182,10 +275,9 @@ class FAISSMetadataRetriever:
                     return json.loads(line.decode('utf-8'))
         except Exception as e:
             print(f"[Metadata Error] Line {line_idx}: {e}")
-        
+
         return {"doc_id": line_idx, "chunk_id": 0, "text": "", "meta": {}}
 
-    @torch.inference_mode()
     def search(self, query: str, top_k: int = 5, score_threshold: float = 0.0) -> list:
         """
         Perform high-speed vector similarity search for a query string.
@@ -197,7 +289,7 @@ class FAISSMetadataRetriever:
         encoder = self._get_encoder()
 
         # Encode query to numpy array
-        query_vec = encoder.encode([query], normalize_embeddings=True, show_progress_bar=False)
+        query_vec = encoder.encode([query], normalize_embeddings=True)
         query_vec = np.array(query_vec, dtype=np.float32)
 
         # Search FAISS index
@@ -207,9 +299,9 @@ class FAISSMetadataRetriever:
         for rank, (dist, idx) in enumerate(zip(distances[0], indices[0]), start=1):
             if idx < 0:
                 continue
-            
+
             similarity = max(0.0, 1.0 - float(dist)) if dist <= 2.0 else float(1.0 / (1.0 + dist))
-            
+
             if similarity < score_threshold:
                 continue
 
