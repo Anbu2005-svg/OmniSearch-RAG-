@@ -100,6 +100,16 @@ def root_check():
     return {"message": "OmniSearch RAG API is running live!", "docs": "/docs"}
 
 
+@app.get("/ping")
+@app.head("/ping")
+def ping():
+    """Minimal liveness probe – no engine init required."""
+    return {"status": "pong"}
+
+
+@app.get("/health")
+@app.get("/healthz")
+@app.get("/actuator/health")
 @app.get("/api/health")
 def health_check():
     ready = init_engine()

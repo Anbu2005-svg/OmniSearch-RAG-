@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+import { resilientFetch } from '../App'
 
 export default function StatsBar() {
   const [stats, setStats] = useState(null)
@@ -10,12 +9,10 @@ export default function StatsBar() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/stats`)
-        if (res.ok) {
-          const data = await res.json()
-          setStats(data)
-          setOnline(data.engine_ready)
-        }
+        const res = await resilientFetch('/api/stats')
+        const data = await res.json()
+        setStats(data)
+        setOnline(data.engine_ready)
       } catch {
         setOnline(false)
       }

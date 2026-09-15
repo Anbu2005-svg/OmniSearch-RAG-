@@ -4,8 +4,41 @@ import StatsBar from './components/StatsBar'
 import SearchPanel from './components/SearchPanel'
 import ResultsPanel from './components/ResultsPanel'
 
-// Read backend URL from Vite environment variable (VITE_API_BASE_URL) or default to localhost:8000
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// Backend URLs – tries primary first, falls back to secondary
+const BACKENDS = [
+  import.meta.env.VITE_API_BASE_URL,                       // set in Vercel dashboard
+  'https://omnisearch-rag.onrender.com',                    // Render fallback
+  'https://rag-757c4.containers.snapdeploy.app',            // SnapDeploy fallback
+].filter(Boolean)
+
+// Resilient fetch: tries each backend in order until one succeeds
+async function resilientFetch(path, options = {}) {
+  let lastErr = null
+  for (const base of BACKENDS) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        ...options,
+        signal: AbortSignal.timeout(15000) // 15s timeout per backend
+      })
+      // Cloudflare challenge pages return 403 with HTML, not JSON
+      if (res.status === 403) {
+        const ct = res.headers.get('content-type') || ''
+        if (ct.includes('text/html')) {
+          throw new Error('Cloudflare challenge – skipping this backend')
+        }
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return res
+    } catch (err) {
+      lastErr = err
+      console.warn(`[resilientFetch] ${base}${path} failed:`, err.message)
+    }
+  }
+  throw lastErr || new Error('All backends unreachable')
+}
+
+// Export for StatsBar reuse
+export { resilientFetch, BACKENDS }
 
 export default function App() {
   const [isSearching, setIsSearching] = useState(false)
@@ -14,7 +47,7 @@ export default function App() {
   const handleSearch = async (searchParams) => {
     setIsSearching(true)
     try {
-      const res = await fetch(`${API_BASE}/api/search`, {
+      const res = await resilientFetch('/api/search', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -22,16 +55,12 @@ export default function App() {
         body: JSON.stringify(searchParams)
       })
 
-      if (!res.ok) {
-        throw new Error(`Server error: ${res.statusText}`)
-      }
-
       const data = await res.json()
       setResults(data)
     } catch (err) {
       console.error('Search error:', err)
       setResults({
-        answer: `⚠️ Connection Error: Could not reach backend server at ${API_BASE}. Make sure server.py is running.`,
+        answer: `⚠️ Connection Error: Could not reach any backend server. All backends may be sleeping — please try again in ~60 seconds.`,
         sources: [],
         query: searchParams.query,
         latency: 0
