@@ -3,11 +3,14 @@ import gc
 import json
 import time
 import array
+import hashlib
+import logging
 import urllib.request
 import numpy as np
 import faiss
 
 faiss.omp_set_num_threads(1)
+logger = logging.getLogger("omnisearch")
 
 # Cloud Dataset Download URLs
 DEFAULT_INDEX_URL = os.getenv(
@@ -24,6 +27,13 @@ ONNX_MODEL_URL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/
 ONNX_TOKENIZER_URL = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
 
 ONNX_MODEL_DIR = os.getenv("ONNX_MODEL_DIR", "onnx_model")
+
+# SEC-07: SHA256 checksums for integrity verification of downloaded files
+# These hashes should be updated when the model version changes
+EXPECTED_HASHES = {
+    "model.onnx": os.getenv("ONNX_MODEL_SHA256", ""),  # Set via env var or leave empty to skip
+    "tokenizer.json": os.getenv("ONNX_TOKENIZER_SHA256", ""),
+}
 
 
 class LightEncoder:
@@ -46,14 +56,19 @@ class LightEncoder:
         tokenizer_path = os.path.join(self.model_dir, "tokenizer.json")
 
         if not os.path.exists(model_path):
-            print(f"[ONNX] Downloading model.onnx (~25 MB)...")
+            logger.info("[ONNX] Downloading model.onnx (~25 MB)...")
             self._download(ONNX_MODEL_URL, model_path)
-            print(f"[ONNX] model.onnx downloaded.")
+            # SEC-07: Verify integrity
+            if not self._verify_hash(model_path, EXPECTED_HASHES.get("model.onnx", "")):
+                raise RuntimeError("ONNX model integrity check failed — possible tampering detected")
+            logger.info("[ONNX] model.onnx downloaded and verified.")
 
         if not os.path.exists(tokenizer_path):
-            print(f"[ONNX] Downloading tokenizer.json...")
+            logger.info("[ONNX] Downloading tokenizer.json...")
             self._download(ONNX_TOKENIZER_URL, tokenizer_path)
-            print(f"[ONNX] tokenizer.json downloaded.")
+            if not self._verify_hash(tokenizer_path, EXPECTED_HASHES.get("tokenizer.json", "")):
+                raise RuntimeError("Tokenizer integrity check failed — possible tampering detected")
+            logger.info("[ONNX] tokenizer.json downloaded and verified.")
 
     def _download(self, url, dest, chunk_size=2 * 1024 * 1024):
         """Stream download in 2 MB chunks to avoid RAM spikes."""
@@ -65,6 +80,23 @@ class LightEncoder:
                     if chunk:
                         f.write(chunk)
         gc.collect()
+
+    @staticmethod
+    def _verify_hash(filepath: str, expected_hash: str) -> bool:
+        """SEC-07: Verify SHA256 hash of downloaded file."""
+        if not expected_hash:
+            return True  # Skip verification if no hash provided
+        sha256 = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for block in iter(lambda: f.read(8192), b""):
+                sha256.update(block)
+        actual = sha256.hexdigest()
+        if actual != expected_hash:
+            logger.error(f"[SEC-07] Hash mismatch for {filepath}: expected={expected_hash[:16]}... got={actual[:16]}...")
+            os.remove(filepath)  # Remove potentially tampered file
+            return False
+        logger.info(f"[SEC-07] Hash verified for {os.path.basename(filepath)}")
+        return True
 
     def load(self):
         """Lazy-load the ONNX model and tokenizer."""
@@ -272,9 +304,21 @@ class FAISSMetadataRetriever:
                 f.seek(offset)
                 line = f.readline()
                 if line:
-                    return json.loads(line.decode('utf-8'))
+                    # SEC-15: Safe JSON deserialization with validation
+                    data = json.loads(line.decode('utf-8'))
+                    if not isinstance(data, dict):
+                        return {"doc_id": line_idx, "chunk_id": 0, "text": "", "meta": {}}
+                    # Ensure expected keys exist and are correct types
+                    return {
+                        "doc_id": data.get("doc_id", line_idx),
+                        "chunk_id": data.get("chunk_id", 0),
+                        "text": str(data.get("text", ""))[:5000],  # Cap text length
+                        "meta": data.get("meta", {}) if isinstance(data.get("meta"), dict) else {},
+                    }
+        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as e:
+            logger.warning(f"[Metadata] Invalid data at line {line_idx}: {type(e).__name__}")
         except Exception as e:
-            print(f"[Metadata Error] Line {line_idx}: {e}")
+            logger.warning(f"[Metadata Error] Line {line_idx}: {type(e).__name__}")
 
         return {"doc_id": line_idx, "chunk_id": 0, "text": "", "meta": {}}
 

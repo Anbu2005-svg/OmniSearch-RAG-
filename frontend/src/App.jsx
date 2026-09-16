@@ -4,11 +4,10 @@ import StatsBar from './components/StatsBar'
 import SearchPanel from './components/SearchPanel'
 import ResultsPanel from './components/ResultsPanel'
 
-// Backend URLs – tries primary first, falls back to secondary
+// SEC-13: Backend URL from environment only — no hardcoded deployment URLs in client code
 const BACKENDS = [
-  import.meta.env.VITE_API_BASE_URL,                       // set in Vercel dashboard
-  'https://omnisearch-rag.onrender.com',                    // Render fallback
-  'https://rag-757c4.containers.snapdeploy.app',            // SnapDeploy fallback
+  import.meta.env.VITE_API_BASE_URL,           // Set in Vercel/deployment dashboard
+  'http://localhost:8000',                       // Local development only
 ].filter(Boolean)
 
 // Resilient fetch: tries each backend in order until one succeeds
