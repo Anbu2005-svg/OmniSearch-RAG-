@@ -41,6 +41,7 @@ frontend/.vite/
 .env
 .env.local
 *.log
+query_results.json
 
 # IDE & OS
 .kilo/

@@ -18,7 +18,7 @@ export default function StatsBar() {
       }
     }
     fetchStats()
-    const interval = setInterval(fetchStats, 10000)
+    const interval = setInterval(fetchStats, 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -49,9 +49,9 @@ export default function StatsBar() {
         </div>
         <div className="stat-item">
           <div className="stat-value">
-            {stats ? `${stats.index_size_mb} MB` : '---'}
+            {stats ? (stats.engine_ready ? 'Ready' : 'Warming') : '---'}
           </div>
-          <div className="stat-label">Index</div>
+          <div className="stat-label">Engine</div>
         </div>
         <div className={`status-badge ${online ? 'online' : 'offline'}`}>
           <span className="status-dot" />

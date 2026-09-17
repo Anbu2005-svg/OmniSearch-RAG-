@@ -63,9 +63,32 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if IS_PRODUCTION:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+        # SEC-26: Prevent search crawlers from indexing API endpoints
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ─── SEC-23: Request Body Size Limit Middleware (Max 1 MB) ───
+MAX_REQUEST_BODY_SIZE = 1 * 1024 * 1024  # 1 MB
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_REQUEST_BODY_SIZE:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Payload too large. Maximum request size is 1 MB."}
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
+app.add_middleware(RequestSizeLimitMiddleware)
 
 
 # ─── SEC-04: Rate Limiting (30 req/min per IP) ───
@@ -255,8 +278,12 @@ def get_stats():
 @app.post("/api/search", response_model=SearchResponse)
 @limiter.limit("30/minute")
 def search(req: SearchRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    client_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:10]
+
     # SEC-01: Validate api_url before making any outbound requests
     if req.api_url and not validate_api_url(req.api_url):
+        logger.warning(f"[Audit] Client={client_hash} BlockedURL={req.api_url[:50]} Status=403")
         return SearchResponse(
             answer="⚠️ Security Error: The provided API URL is not allowed. Only known LLM provider endpoints are permitted.",
             sources=[],
@@ -267,6 +294,7 @@ def search(req: SearchRequest, request: Request):
 
     ready = init_engine()
     if not ready:
+        logger.info(f"[Audit] Client={client_hash} WarmingUp=True Status=503")
         return SearchResponse(
             answer="Engine is warming up. Please wait a moment and retry.",
             sources=[],
@@ -288,6 +316,9 @@ def search(req: SearchRequest, request: Request):
         )
         latency = time.time() - start
 
+        # SEC-24: Structured audit log with hashed client IP and latency
+        logger.info(f"[Audit] Client={client_hash} QueryLen={len(req.query)} TopK={req.top_k} Latency={latency:.3f}s Status=200")
+
         return SearchResponse(
             answer=result["answer"],
             sources=result["sources"],
@@ -296,7 +327,7 @@ def search(req: SearchRequest, request: Request):
             latency=round(latency, 3),
         )
     except Exception:
-        logger.exception("[Search] Unexpected error during search")
+        logger.exception(f"[Audit] Client={client_hash} Status=500 Unexpected search error")
         return SearchResponse(
             answer="An internal error occurred. Please try again.",
             sources=[],
